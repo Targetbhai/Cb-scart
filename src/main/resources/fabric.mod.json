@@ -1,0 +1,26 @@
+{
+    "schemaVersion": 1,
+    "id": "fpsdisplay",
+    "version": "${version}",
+    "name": "fpsdisplay",
+    "description": "",
+    "authors": [],
+    "license": "All-Rights-Reserved",
+    "environment": "client",
+    "entrypoints": {
+        "client": [
+            "io.grayray75.mods.fpsdisplay.FpsTick"
+        ]
+    },
+    "depends": {
+        "fabricloader": ">=0.15.10",
+        "minecraft": ["1.21", "1.21.1"],
+        "fabric-events-interaction-v0": "*",
+        "fabric-lifecycle-events-v1": "*"
+    },
+    "custom": {
+        "modmenu": {
+            "badges": ["library"]
+        }
+    }
+}
