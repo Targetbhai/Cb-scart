@@ -63,7 +63,7 @@ public class FpsTick implements ClientModInitializer {
     private static final double ARROW_GRAVITY = 0.05;
     private static final double SPAWN_DROP = 0.1F; // arrow spawns at eyeY - 0.1F
 
-    private static final int COOLDOWN_TICKS = 20;      // 1 second
+    private static final int COOLDOWN_TICKS = 0;       // 1 second
     private static final int WAIT_TIMEOUT_TICKS = 40;  // placement verification timeout
     private static final double REACH = 5.0;
     private static final int SNEAK_TICKS = 2;          // ticks to hold sneak before shooting so the server's pose is crouched
@@ -207,6 +207,7 @@ public class FpsTick implements ClientModInitializer {
         waitTicks = 0;
         step = pendingSwaps.isEmpty() ? Step.PLACE_RAIL : Step.SWAP_IN;
         msg("Started");
+        pressSneak(client); // sneak starts on the click tick; shot goes out SNEAK_TICKS later
 
         // A held right mouse button would otherwise keep using whatever slot we select.
         client.options.useKey.setPressed(false);
@@ -238,7 +239,7 @@ public class FpsTick implements ClientModInitializer {
     }
 
     private Plan tryGround(ClientPlayerEntity player, ClientWorld world, Vec3d feet, BlockPos ground, double sneakEyeY) {
-        if (!reachable(player, ground)) { msg("Target block out of reach"); return null; }
+        if (!reachable(player, ground, REACH)) { msg("Target block out of reach"); return null; }
 
         BlockPos rail = ground.up();
         // estimated cart centre (minecart box is 0.98 x 0.7, sits 0.0625 above the rail cell floor)
@@ -267,30 +268,10 @@ public class FpsTick implements ClientModInitializer {
             BlockPos support = ground.add(dir[0], 0, dir[1]);
             BlockPos fire = support.up();
             if (!solidTop(world, support) || !world.getBlockState(fire).isAir()) continue;
-            if (!reachable(player, support)) continue;
+            if (!reachable(player, support, 4.5)) continue;
             if (!new Box(fire).intersects(arrowBox)) continue;
             return new Plan(ground, support);
         }
-        // Fallback: the rail/cart may be anywhere 2-5 blocks away, so look for a fire spot
-        // around the arrow's first end-of-tick position instead of next to the rail.
-        BlockPos near = BlockPos.ofFloored(first);
-        BlockPos best = null;
-        double bestD = Double.MAX_VALUE;
-        for (int x = -2; x <= 2; x++) {
-            for (int z = -2; z <= 2; z++) {
-                for (int y = -3; y <= 1; y++) {
-                    BlockPos support = near.add(x, y, z);
-                    BlockPos fire = support.up();
-                    if (fire.equals(rail) || support.equals(ground)) continue;
-                    if (!solidTop(world, support) || !world.getBlockState(fire).isAir()) continue;
-                    if (!reachable(player, support)) continue;
-                    if (!new Box(fire).intersects(arrowBox)) continue;
-                    double d = Vec3d.ofCenter(fire).squaredDistanceTo(first);
-                    if (d < bestD) { bestD = d; best = support; }
-                }
-            }
-        }
-        if (best != null) return new Plan(ground, best);
         msg("No valid fire spot between you and the rail");
         return null;
     }
@@ -304,12 +285,12 @@ public class FpsTick implements ClientModInitializer {
         return state.isAir() || (state.isReplaceable() && state.getFluidState().isEmpty());
     }
 
-    private static boolean reachable(ClientPlayerEntity player, BlockPos pos) {
+    private static boolean reachable(ClientPlayerEntity player, BlockPos pos, double reach) {
         Vec3d e = player.getEyePos();
         double dx = Math.max(Math.max(pos.getX() - e.x, 0), e.x - (pos.getX() + 1));
         double dy = Math.max(Math.max(pos.getY() - e.y, 0), e.y - (pos.getY() + 1));
         double dz = Math.max(Math.max(pos.getZ() - e.z, 0), e.z - (pos.getZ() + 1));
-        return dx * dx + dy * dy + dz * dz <= REACH * REACH;
+        return dx * dx + dy * dy + dz * dz <= reach * reach;
     }
 
     // ------------------------------------------------------------------ step machine
@@ -332,20 +313,33 @@ public class FpsTick implements ClientModInitializer {
         }
 
         switch (step) {
-            case SWAP_IN -> swapIn(client, player);
-            case PLACE_RAIL -> placeRail(client, player);
-            case WAIT_RAIL -> confirmBlock(client, player, world.getBlockState(railPos).isIn(BlockTags.RAILS), Step.PLACE_CART, "Rail");
-            case PLACE_CART -> placeCart(client, player);
-            case WAIT_CART -> waitFor(client, findCart(world) != null, Step.PLACE_FIRE);
-            case PLACE_FIRE -> placeFire(client, player);
-            case WAIT_FIRE -> confirmBlock(client, player, world.getBlockState(firePos).isIn(BlockTags.FIRE), Step.SNEAK, "Fire");
-            case SNEAK -> sneak(client, player);
-            case SNEAK_WAIT -> sneakWait(player);
-            case SHOOT -> shoot(client, player, world);
+            case SWAP_IN, PLACE_RAIL -> burst(client, player);
+            case SNEAK_WAIT -> sneakWait(client, player, world);
             case RESTORE_SLOT -> restoreSlot(player);
             case SWAP_OUT -> swapOut(client, player);
             default -> { }
         }
+    }
+
+    /** All swaps and all three placements in one tick. The server handles the packets in order. */
+    private void burst(MinecraftClient client, ClientPlayerEntity player) {
+        while (!pendingSwaps.isEmpty()) {
+            int[] swap = pendingSwaps.poll();
+            click(client, player, swap[0], swap[1]);
+            doneSwaps.push(swap);
+        }
+        if (!holds(player, railSlot, Items.RAIL)) { abort(client, "Rail left the hotbar slot"); return; }
+        if (!holds(player, cartSlot, Items.TNT_MINECART)) { abort(client, "TNT minecart left the hotbar slot"); return; }
+        if (!holds(player, flintSlot, Items.FLINT_AND_STEEL)) { abort(client, "Flint and steel left the hotbar slot"); return; }
+        ItemStack bow = player.getInventory().getStack(crossbowSlot);
+        if (!bow.isOf(Items.CROSSBOW) || !CrossbowItem.isCharged(bow)) { abort(client, "Crossbow is not loaded"); return; }
+
+        useOnBlock(client, player, railSlot, groundPos);
+        useOnBlock(client, player, cartSlot, railPos);
+        useOnBlock(client, player, flintSlot, fireSupportPos);
+        player.getInventory().selectedSlot = crossbowSlot;
+        sneakTicks = 0;
+        step = Step.SNEAK_WAIT;
     }
 
     private void swapIn(MinecraftClient client, ClientPlayerEntity player) {
@@ -425,214 +419,28 @@ public class FpsTick implements ClientModInitializer {
         step = Step.SNEAK_WAIT;
     }
 
-    private void sneakWait(ClientPlayerEntity player) {
+    private void sneakWait(MinecraftClient client, ClientPlayerEntity player, ClientWorld world) {
         player.getInventory().selectedSlot = crossbowSlot;
-        if (++sneakTicks >= SNEAK_TICKS) step = Step.SHOOT;
+        if (++sneakTicks >= SNEAK_TICKS) shoot(client, player, world);
     }
 
     private void shoot(MinecraftClient client, ClientPlayerEntity player, ClientWorld world) {
         ItemStack bow = player.getInventory().getStack(crossbowSlot);
         TntMinecartEntity cart = findCart(world);
-        if (!bow.isOf(Items.CROSSBOW) || !CrossbowItem.isCharged(bow) || cart == null) {
-            abort(client, "Crossbow not loaded or cart gone");
+        if (!bow.isOf(Items.CROSSBOW) || !CrossbowItem.isCharged(bow)) {
+            abort(client, "Crossbow not loaded");
             return;
         }
         player.getInventory().selectedSlot = crossbowSlot;
 
         // Eye height is read live: the player is sneaking right now.
         Vec3d spawn = new Vec3d(player.getX(), player.getEyeY() - SPAWN_DROP, player.getZ());
-        Vec3d target = cart.getBoundingBox().getCenter();
+        // The cart entity may not have arrived yet: aim at where it spawns (same estimate as the planner).
+        Vec3d target = cart != null
+                ? cart.getBoundingBox().getCenter()
+                : new Vec3d(railPos.getX() + 0.5, railPos.getY() + 0.0625 + 0.35, railPos.getZ() + 0.5);
         double pitch = solvePitch(world, player, spawn, target);
         if (Double.isNaN(pitch)) { abort(client, "No aim solution for the cart"); return; }
 
         float yaw = (float) yawTo(spawn, target);
-        float pitchF = (float) pitch;
-
-        player.setYaw(yaw);
-        player.setPitch(pitchF);
-        player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitchF, player.isOnGround()));
-        ActionResult result = client.interactionManager.interactItem(player, Hand.MAIN_HAND);
-        if (result.shouldSwingHand()) player.swingHand(Hand.MAIN_HAND);
-
-        releaseSneak(client);
-        msg("Shot fired");
-        step = Step.RESTORE_SLOT;
-    }
-
-    private void restoreSlot(ClientPlayerEntity player) {
-        player.getInventory().selectedSlot = origSlot;
-        if (doneSwaps.isEmpty()) finish();
-        else step = Step.SWAP_OUT;
-    }
-
-    private void swapOut(MinecraftClient client, ClientPlayerEntity player) {
-        int[] swap = doneSwaps.pop(); // last swap first
-        click(client, player, swap[0], swap[1]);
-        if (doneSwaps.isEmpty()) finish();
-    }
-
-    private void finish() {
-        step = Step.IDLE;
-        cooldown = COOLDOWN_TICKS;
-    }
-
-    private void abort(MinecraftClient client, String why) {
-        msg("Stopped: " + why);
-        abort(client);
-    }
-
-    /** Stops the run: release sneak, then put the slot and swaps back. */
-    private void abort(MinecraftClient client) {
-        releaseSneak(client);
-        pendingSwaps.clear();
-        step = Step.RESTORE_SLOT;
-    }
-
-    private void reset(MinecraftClient client) {
-        releaseSneak(client);
-        pendingSwaps.clear();
-        doneSwaps.clear();
-        step = Step.IDLE;
-        cooldown = COOLDOWN_TICKS;
-    }
-
-    // ------------------------------------------------------------------ inventory / input helpers
-
-    private static boolean holds(ClientPlayerEntity player, int hotbarSlot, Item item) {
-        return player.getInventory().getStack(hotbarSlot).isOf(item);
-    }
-
-    /** SWAP click between an inventory slot and a hotbar slot (same click undoes itself). */
-    private void click(MinecraftClient client, ClientPlayerEntity player, int inventoryIndex, int hotbarSlot) {
-        int slotId = inventoryIndex < 9 ? 36 + inventoryIndex : inventoryIndex;
-        client.interactionManager.clickSlot(player.playerScreenHandler.syncId, slotId, hotbarSlot, SlotActionType.SWAP, player);
-    }
-
-    private void pressSneak(MinecraftClient client) {
-        KeyBinding key = client.options.sneakKey;
-        sneakEngaged = true;
-        sneakWasPressed = key.isPressed();
-        if (!key.isPressed()) key.setPressed(true); // in toggle mode this toggles sneak on
-    }
-
-    /** Puts the sneak key back to what the physical key is doing. */
-    private void releaseSneak(MinecraftClient client) {
-        if (!sneakEngaged) return;
-        sneakEngaged = false;
-        KeyBinding key = client.options.sneakKey;
-        if (client.options.getSneakToggled().getValue()) {
-            if (key.isPressed() && !sneakWasPressed) key.setPressed(true); // toggles back off
-        } else {
-            key.setPressed(physicallyDown(client, key));
-        }
-    }
-
-    private static boolean physicallyDown(MinecraftClient client, KeyBinding key) {
-        InputUtil.Key bound = InputUtil.fromTranslationKey(key.getBoundKeyTranslationKey());
-        long window = client.getWindow().getHandle();
-        if (bound.getCategory() == InputUtil.Type.MOUSE) {
-            return GLFW.glfwGetMouseButton(window, bound.getCode()) == GLFW.GLFW_PRESS;
-        }
-        if (bound.getCategory() == InputUtil.Type.KEYSYM) {
-            return InputUtil.isKeyPressed(window, bound.getCode());
-        }
-        return false;
-    }
-
-    private TntMinecartEntity findCart(ClientWorld world) {
-        List<TntMinecartEntity> carts = world.getEntitiesByClass(
-                TntMinecartEntity.class, new Box(railPos).expand(1.0), Entity::isAlive);
-        TntMinecartEntity best = null;
-        double bestDist = Double.MAX_VALUE;
-        Vec3d rail = Vec3d.ofCenter(railPos);
-        for (TntMinecartEntity cart : carts) {
-            double d = cart.getPos().squaredDistanceTo(rail);
-            if (d < bestDist) {
-                bestDist = d;
-                best = cart;
-            }
-        }
-        return best;
-    }
-
-    // ------------------------------------------------------------------ aiming
-
-    private static double yawTo(Vec3d from, Vec3d to) {
-        return Math.toDegrees(Math.atan2(to.z - from.z, to.x - from.x)) - 90.0;
-    }
-
-    private static Vec3d direction(double yawDeg, double pitchDeg) {
-        double y = Math.toRadians(yawDeg);
-        double p = Math.toRadians(pitchDeg);
-        return new Vec3d(-Math.sin(y) * Math.cos(p), -Math.sin(p), Math.cos(y) * Math.cos(p));
-    }
-
-    /** Arrow height at the target's horizontal distance minus target height; NaN if it never gets there. */
-    private static double heightError(Vec3d spawn, double yaw, double pitch, double horiz, double targetY) {
-        Vec3d v = direction(yaw, pitch).multiply(ARROW_SPEED);
-        double x = spawn.x, y = spawn.y, z = spawn.z;
-        double vx = v.x, vy = v.y, vz = v.z;
-        double prevH = 0;
-        for (int i = 0; i < 200; i++) {
-            double nx = x + vx, ny = y + vy, nz = z + vz;
-            double h = Math.hypot(nx - spawn.x, nz - spawn.z);
-            if (h >= horiz) {
-                double f = h > prevH ? (horiz - prevH) / (h - prevH) : 0;
-                return (y + (ny - y) * f) - targetY;
-            }
-            x = nx; y = ny; z = nz;
-            prevH = h;
-            vx *= ARROW_DRAG;
-            vy = vy * ARROW_DRAG - ARROW_GRAVITY;
-            vz *= ARROW_DRAG;
-        }
-        return Double.NaN;
-    }
-
-    /**
-     * Pitch (degrees, positive = down) so the simulated arrow reaches the target. NaN if there is
-     * no solution or terrain blocks the flight path. Yaw is toward the target.
-     */
-    private static double solvePitch(ClientWorld world, Entity shooter, Vec3d spawn, Vec3d target) {
-        double yaw = yawTo(spawn, target);
-        double horiz = Math.hypot(target.x - spawn.x, target.z - spawn.z);
-        if (horiz < 0.5) return Double.NaN;
-
-        double lo = -60, hi = 60; // arrival height falls as pitch rises
-        double fLo = heightError(spawn, yaw, lo, horiz, target.y);
-        double fHi = heightError(spawn, yaw, hi, horiz, target.y);
-        if (Double.isNaN(fLo) || Double.isNaN(fHi) || fLo <= 0 || fHi >= 0) return Double.NaN;
-
-        for (int i = 0; i < 50; i++) {
-            double mid = (lo + hi) / 2;
-            double f = heightError(spawn, yaw, mid, horiz, target.y);
-            if (Double.isNaN(f)) return Double.NaN;
-            if (f > 0) lo = mid;
-            else hi = mid;
-        }
-        double pitch = (lo + hi) / 2;
-        return pathClear(world, shooter, spawn, yaw, pitch, horiz) ? pitch : Double.NaN;
-    }
-
-    /** Raycasts every tick-segment of the flight for solid blocks. */
-    private static boolean pathClear(ClientWorld world, Entity shooter, Vec3d spawn, double yaw, double pitch, double horiz) {
-        Vec3d v = direction(yaw, pitch).multiply(ARROW_SPEED);
-        Vec3d pos = spawn;
-        for (int i = 0; i < 100; i++) {
-            Vec3d next = pos.add(v);
-            double h = Math.hypot(next.x - spawn.x, next.z - spawn.z);
-            boolean last = h >= horiz;
-            if (last) {
-                double hp = Math.hypot(pos.x - spawn.x, pos.z - spawn.z);
-                if (h > hp) next = pos.add(v.multiply((horiz - hp) / (h - hp)));
-            }
-            BlockHitResult hit = world.raycast(new RaycastContext(
-                    pos, next, RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, shooter));
-            if (hit.getType() != HitResult.Type.MISS) return false;
-            if (last) return true;
-            pos = next;
-            v = new Vec3d(v.x * ARROW_DRAG, v.y * ARROW_DRAG - ARROW_GRAVITY, v.z * ARROW_DRAG);
-        }
-        return false;
-    }
-}
+        float pitchF = (
