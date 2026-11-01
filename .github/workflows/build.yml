@@ -22,7 +22,7 @@ jobs:
         with:
           gradle-version: "9.2.1"
       - name: Build with Gradle
-        run: gradle build --no-daemon
+        run: gradle build --no-daemon --stacktrace
       - name: Check jar name
         run: |
           ls -l build/libs
