@@ -20,16 +20,16 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.8"
+          gradle-version: "9.2.1"
       - name: Build with Gradle
         run: gradle build --no-daemon
       - name: Check jar name
         run: |
           ls -l build/libs
-          test -f "build/libs/fpsdisplay-4.1.2.1+1.21.1.jar"
+          test -f "build/libs/fpsdisplay-4.1.2.2+1.21.11.jar"
       - name: Upload mod jar
         uses: actions/upload-artifact@v4
         with:
-          name: fpsdisplay-4.1.2.1+1.21.1
-          path: build/libs/fpsdisplay-4.1.2.1+1.21.1.jar
+          name: fpsdisplay-4.1.2.2+1.21.11
+          path: build/libs/fpsdisplay-4.1.2.2+1.21.11.jar
           if-no-files-found: error
