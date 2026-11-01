@@ -145,7 +145,7 @@ public class FpsTick implements ClientModInitializer {
         BlockPos firePos = calcFirePos(player, world, target);
         if (firePos == null) return false;
 
-        int originalSlot = player.getInventory().getSelectedSlot();
+        int originalSlot = player.getInventory().selectedSlot;
         List<int[]> swaps = new ArrayList<>(); // {inventorySlot, hotbarSlot}
         Set<Integer> reserved = new HashSet<>();
         reserved.add(originalSlot); // never touch the sword slot
@@ -333,14 +333,14 @@ public class FpsTick implements ClientModInitializer {
         if (MinecraftClient.getInstance().getNetworkHandler() != null) {
             MinecraftClient.getInstance().getNetworkHandler().sendPacket(
                     new PlayerMoveC2SPacket.Full(player.getX(), player.getY(), player.getZ(),
-                            (float) yaw, (float) pitch, player.isOnGround(), player.horizontalCollision));
+                            (float) yaw, (float) pitch, player.isOnGround()));
         }
     }
 
     // ----------------------------------------------------------------- items
 
     private void select(MinecraftClient mc, ClientPlayerEntity player, int slot) {
-        player.getInventory().setSelectedSlot(slot);
+        player.getInventory().selectedSlot = slot;
         if (mc.getNetworkHandler() != null) {
             mc.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(slot));
         }
